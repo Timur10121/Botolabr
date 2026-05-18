@@ -239,16 +239,11 @@ async def _walk(token, bot_id, chat_id, scenario_id, nodes, edges, current, user
             keyboard = []
             for btn in buttons:
                 btn_text = btn.get("text", "")
-                btn_next = btn.get("next", "").strip()
-                # Если next не задан — ищем ребро с label = текст кнопки
-                if not btn_next:
-                    for e in edges:
-                        if e.get("source") == node_id:
-                            edge_label = (e.get("label") or "").strip().lower()
-                            if edge_label == btn_text.strip().lower() or not edge_label:
-                                btn_next = e.get("target", "")
-                                break
-                cb_data = f"goto:{btn_next}" if btn_next else f"btn:{btn_text}"
+                btn_next = (btn.get("next") or "").strip()
+                # Если написали просто цифру — добавляем префикс node_
+                if btn_next and btn_next.isdigit():
+                    btn_next = f"node_{btn_next}"
+                cb_data = f"goto:{btn_next}" if btn_next else btn_text
                 keyboard.append([{"text": btn_text, "callback_data": cb_data}])
             markup = {"inline_keyboard": keyboard} if keyboard else None
             await send_tg_message(token, chat_id, text, markup)
