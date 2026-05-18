@@ -14,11 +14,11 @@ from dbutils.pooled_db import PooledDB
 
 # ── Конфигурация из переменных окружения ──────────────────────────────────
 DB_CONFIG = {
-    "host":     os.getenv("DB_HOST",     "localhost"),
-    "port":     int(os.getenv("DB_PORT", "3306")),
-    "user":     os.getenv("DB_USER",     "botolabr"),
-    "password": os.getenv("DB_PASSWORD", ""),
-    "database": os.getenv("DB_NAME",     "botolabr"),
+    "host":     os.getenv("DB_HOST"),
+    "port":     int(os.getenv("DB_PORT")),
+    "user":     os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "database": os.getenv("DB_NAME"),
     "charset":  "utf8mb4",
     "cursorclass": pymysql.cursors.DictCursor,
     "autocommit": False,
@@ -114,7 +114,7 @@ def init_db():
             user_id     INT          NOT NULL,
             name        VARCHAR(255) NOT NULL,
             description TEXT         DEFAULT NULL,
-            trigger     VARCHAR(255) DEFAULT '',
+            `trigger`   VARCHAR(255) DEFAULT '',
             nodes       LONGTEXT     DEFAULT '[]',
             edges       LONGTEXT     DEFAULT '[]',
             active      TINYINT(1)   DEFAULT 0,
@@ -141,8 +141,8 @@ def init_db():
         """,
     ]
 
-    with get_db() as db:
-        for stmt in statements:
+    for stmt in statements:
+        with get_db() as db:
             db.execute(stmt)
 
     print("[DB] Таблицы инициализированы.")

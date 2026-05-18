@@ -361,7 +361,7 @@ def create_scenario(body: ScenarioBody, user=Depends(get_current_user)):
             raise HTTPException(404, "Бот не найден")
         db.execute(
             """INSERT INTO scenarios
-               (bot_id, user_id, name, description, trigger, nodes, edges, created_at, updated_at)
+               (bot_id, user_id, name, description, `trigger`, nodes, edges, created_at, updated_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (body.bot_id, user["id"], body.name, body.description,
              body.trigger, json.dumps(body.nodes), json.dumps(body.edges), now, now)
@@ -400,7 +400,7 @@ def update_scenario(scenario_id: int, body: UpdateScenarioBody, user=Depends(get
         vals   = [now]
         if body.name        is not None: fields.append("name=%s");        vals.append(body.name)
         if body.description is not None: fields.append("description=%s"); vals.append(body.description)
-        if body.trigger     is not None: fields.append("trigger=%s");     vals.append(body.trigger)
+        if body.trigger     is not None: fields.append("`trigger`=%s");     vals.append(body.trigger)
         if body.nodes       is not None: fields.append("nodes=%s");       vals.append(json.dumps(body.nodes))
         if body.edges       is not None: fields.append("edges=%s");       vals.append(json.dumps(body.edges))
         if body.active      is not None: fields.append("active=%s");      vals.append(1 if body.active else 0)
