@@ -458,6 +458,19 @@ async def telegram_webhook(bot_token: str, update: WebhookUpdate):
         await handle_goto(bot, chat_id, user_text[5:], callback_id)
         return {"ok": True}
 
+    # Кнопка без явного next — ищем по тексту кнопки через resume
+    if is_callback and user_text.startswith("btn:"):
+        from scenario_engine import answer_callback
+        if callback_id:
+            await answer_callback(bot["token"], callback_id)
+        btn_label = user_text[4:]
+        resumed = await resume_scenario(bot, chat_id, btn_label, callback_id)
+        if not resumed:
+            scenario = find_active_scenario(bot["id"], btn_label)
+            if scenario:
+                await execute_scenario(bot, scenario, chat_id, btn_label, callback_id)
+        return {"ok": True}
+
     if not is_callback:
         resumed = await resume_scenario(bot, chat_id, user_text, callback_id)
         if resumed:
