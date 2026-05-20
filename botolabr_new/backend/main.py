@@ -1,16 +1,20 @@
 from dotenv import load_dotenv
 load_dotenv()
-
+ 
 import json
 import time
 import hashlib
 import secrets
+import asyncio
+import os
 from typing import Optional
-
+from contextlib import asynccontextmanager
+ 
+import httpx
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
+ 
 from database import get_db, init_db
 from models import (
     RegisterBody, LoginBody, UpdateProfileBody, ChangePasswordBody,
@@ -22,10 +26,33 @@ from scenario_engine import (
     find_active_scenario, execute_scenario,
     resume_scenario, handle_goto,
 )
-
+ 
+# ─── Keepalive (пинг каждые 10 минут чтобы Render не засыпал) ────────────────
+ 
+SELF_URL = os.getenv("SELF_URL", "")
+ 
+async def _keepalive():
+    await asyncio.sleep(60)
+    while True:
+        try:
+            if SELF_URL:
+                async with httpx.AsyncClient() as client:
+                    await client.get(f"{SELF_URL}/api/health", timeout=2)
+                print("[keepalive] ping ok")
+        except Exception as e:
+            print(f"[keepalive] ping failed: {e}")
+        await asyncio.sleep(120)
+ 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    task = asyncio.create_task(_keepalive())
+    yield
+    task.cancel()
+ 
 # ─── App ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title="BOTOLABR API", version="2.0.0")
-
+app = FastAPI(title="BOTOLABR API", version="2.0.0", lifespan=lifespan)
+ 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,18 +60,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+ 
 security = HTTPBearer()
-
-init_db()
-
-
+ 
+ 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
-
+ 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
-
-
+ 
+ 
 def create_token(user_id: int) -> str:
     token = secrets.token_hex(32)
     expires = int(time.time()) + 30 * 24 * 3600
@@ -54,8 +79,8 @@ def create_token(user_id: int) -> str:
             (token, user_id, expires)
         )
     return token
-
-
+ 
+ 
 def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
     token = creds.credentials
     with get_db() as db:
@@ -72,10 +97,10 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
     if not user:
         raise HTTPException(status_code=401, detail="Пользователь не найден")
     return user
-
-
+ 
+ 
 # ─── Auth routes ──────────────────────────────────────────────────────────────
-
+ 
 @app.post("/api/auth/register")
 def register(body: RegisterBody):
     if len(body.username) < 3:
@@ -98,8 +123,8 @@ def register(body: RegisterBody):
         user = db.fetchone()
     token = create_token(user["id"])
     return {"token": token, "user": {"id": user["id"], "username": user["username"], "email": user["email"]}}
-
-
+ 
+ 
 @app.post("/api/auth/login")
 def login(body: LoginBody):
     with get_db() as db:
@@ -112,22 +137,22 @@ def login(body: LoginBody):
         "token": token,
         "user": {"id": user["id"], "username": user["username"], "email": user["email"], "name": user["name"]}
     }
-
-
+ 
+ 
 @app.post("/api/auth/logout")
 def logout(creds: HTTPAuthorizationCredentials = Depends(security)):
     with get_db() as db:
         db.execute("DELETE FROM sessions WHERE token=%s", (creds.credentials,))
     return {"ok": True}
-
-
+ 
+ 
 # ─── Profile routes ───────────────────────────────────────────────────────────
-
+ 
 @app.get("/api/me")
 def get_me(user=Depends(get_current_user)):
     return {k: v for k, v in user.items() if k != "password"}
-
-
+ 
+ 
 @app.patch("/api/me")
 def update_profile(body: UpdateProfileBody, user=Depends(get_current_user)):
     fields, vals = [], []
@@ -141,8 +166,8 @@ def update_profile(body: UpdateProfileBody, user=Depends(get_current_user)):
     with get_db() as db:
         db.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=%s", vals)
     return {"ok": True}
-
-
+ 
+ 
 @app.post("/api/me/password")
 def change_password(body: ChangePasswordBody, user=Depends(get_current_user)):
     if user["password"] != hash_password(body.current_password):
@@ -155,8 +180,8 @@ def change_password(body: ChangePasswordBody, user=Depends(get_current_user)):
             (hash_password(body.new_password), user["id"])
         )
     return {"ok": True}
-
-
+ 
+ 
 @app.post("/api/me/avatar-base64")
 async def upload_avatar_b64(request: Request, user=Depends(get_current_user)):
     data = await request.json()
@@ -166,10 +191,10 @@ async def upload_avatar_b64(request: Request, user=Depends(get_current_user)):
     with get_db() as db:
         db.execute("UPDATE users SET avatar=%s WHERE id=%s", (avatar_data, user["id"]))
     return {"ok": True}
-
-
+ 
+ 
 # ─── Bot routes ───────────────────────────────────────────────────────────────
-
+ 
 @app.get("/api/bots")
 def get_bots(user=Depends(get_current_user)):
     with get_db() as db:
@@ -179,11 +204,10 @@ def get_bots(user=Depends(get_current_user)):
         )
         bots = db.fetchall()
     return list(bots)
-
-
+ 
+ 
 @app.post("/api/bots/check")
 async def check_bot_token(body: CheckBotBody):
-    import httpx
     token = body.token.strip()
     async with httpx.AsyncClient() as client:
         r = await client.get(
@@ -198,8 +222,8 @@ async def check_bot_token(body: CheckBotBody):
         "bot_username": data["result"]["username"],
         "bot_name":     data["result"]["first_name"],
     }
-
-
+ 
+ 
 @app.post("/api/bots")
 async def connect_bot(body: ConnectBotBody, user=Depends(get_current_user)):
     token = body.token.strip()
@@ -211,17 +235,16 @@ async def connect_bot(body: ConnectBotBody, user=Depends(get_current_user)):
         dup = db.fetchone()
     if dup:
         raise HTTPException(400, "Этот бот уже подключён к вашему аккаунту")
-
-    import httpx
+ 
     async with httpx.AsyncClient() as client:
         r = await client.get(f"https://api.telegram.org/bot{token}/getMe", timeout=10)
     tg = r.json()
     if not tg.get("ok"):
         raise HTTPException(400, "Неверный токен Telegram")
-
+ 
     bot_username = tg["result"]["username"]
     bot_name     = tg["result"]["first_name"]
-
+ 
     with get_db() as db:
         db.execute(
             "INSERT INTO bots (user_id, token, bot_username, bot_name, connected_at) VALUES (%s, %s, %s, %s, %s)",
@@ -231,8 +254,8 @@ async def connect_bot(body: ConnectBotBody, user=Depends(get_current_user)):
         db.execute("SELECT * FROM bots WHERE id=%s", (bot_id,))
         bot = db.fetchone()
     return dict(bot)
-
-
+ 
+ 
 @app.delete("/api/bots/{bot_id}")
 def delete_bot(bot_id: int, user=Depends(get_current_user)):
     with get_db() as db:
@@ -246,8 +269,8 @@ def delete_bot(bot_id: int, user=Depends(get_current_user)):
         db.execute("DELETE FROM user_states WHERE bot_id=%s", (bot_id,))
         db.execute("DELETE FROM bots WHERE id=%s",            (bot_id,))
     return {"ok": True}
-
-
+ 
+ 
 @app.patch("/api/bots/{bot_id}/toggle")
 def toggle_bot(bot_id: int, user=Depends(get_current_user)):
     with get_db() as db:
@@ -260,11 +283,10 @@ def toggle_bot(bot_id: int, user=Depends(get_current_user)):
         new_active = 0 if bot["active"] else 1
         db.execute("UPDATE bots SET active=%s WHERE id=%s", (new_active, bot_id))
     return {"active": bool(new_active)}
-
-
+ 
+ 
 @app.post("/api/bots/{bot_id}/set-webhook")
 async def set_webhook(bot_id: int, request: Request, user=Depends(get_current_user)):
-    import httpx
     with get_db() as db:
         db.execute(
             "SELECT * FROM bots WHERE id=%s AND user_id=%s", (bot_id, user["id"])
@@ -287,11 +309,10 @@ async def set_webhook(bot_id: int, request: Request, user=Depends(get_current_us
     if not data.get("ok"):
         raise HTTPException(400, f"Telegram error: {data.get('description')}")
     return {"ok": True, "webhook_url": webhook_url}
-
-
+ 
+ 
 @app.delete("/api/bots/{bot_id}/set-webhook")
 async def delete_webhook(bot_id: int, user=Depends(get_current_user)):
-    import httpx
     with get_db() as db:
         db.execute(
             "SELECT * FROM bots WHERE id=%s AND user_id=%s", (bot_id, user["id"])
@@ -304,11 +325,10 @@ async def delete_webhook(bot_id: int, user=Depends(get_current_user)):
             f"https://api.telegram.org/bot{bot['token']}/deleteWebhook", timeout=10
         )
     return {"ok": r.json().get("ok", False)}
-
-
+ 
+ 
 @app.get("/api/bots/{bot_id}/webhook-info")
 async def get_webhook_info(bot_id: int, user=Depends(get_current_user)):
-    import httpx
     with get_db() as db:
         db.execute(
             "SELECT * FROM bots WHERE id=%s AND user_id=%s", (bot_id, user["id"])
@@ -321,17 +341,17 @@ async def get_webhook_info(bot_id: int, user=Depends(get_current_user)):
             f"https://api.telegram.org/bot{bot['token']}/getWebhookInfo", timeout=10
         )
     return r.json()
-
-
+ 
+ 
 # ─── Scenario routes ──────────────────────────────────────────────────────────
-
+ 
 def _serialize_scenario(row: dict) -> dict:
     d = dict(row)
     d["nodes"] = json.loads(d.get("nodes") or "[]")
     d["edges"] = json.loads(d.get("edges") or "[]")
     return d
-
-
+ 
+ 
 @app.get("/api/scenarios")
 def get_scenarios(bot_id: Optional[int] = None, user=Depends(get_current_user)):
     with get_db() as db:
@@ -347,8 +367,8 @@ def get_scenarios(bot_id: Optional[int] = None, user=Depends(get_current_user)):
             )
         rows = db.fetchall()
     return [_serialize_scenario(r) for r in rows]
-
-
+ 
+ 
 @app.post("/api/scenarios")
 def create_scenario(body: ScenarioBody, user=Depends(get_current_user)):
     now = int(time.time())
@@ -370,8 +390,8 @@ def create_scenario(body: ScenarioBody, user=Depends(get_current_user)):
         db.execute("SELECT * FROM scenarios WHERE id=%s", (scenario_id,))
         row = db.fetchone()
     return _serialize_scenario(row)
-
-
+ 
+ 
 @app.get("/api/scenarios/{scenario_id}")
 def get_scenario(scenario_id: int, user=Depends(get_current_user)):
     with get_db() as db:
@@ -383,8 +403,8 @@ def get_scenario(scenario_id: int, user=Depends(get_current_user)):
     if not row:
         raise HTTPException(404, "Сценарий не найден")
     return _serialize_scenario(row)
-
-
+ 
+ 
 @app.patch("/api/scenarios/{scenario_id}")
 def update_scenario(scenario_id: int, body: UpdateScenarioBody, user=Depends(get_current_user)):
     now = int(time.time())
@@ -395,7 +415,7 @@ def update_scenario(scenario_id: int, body: UpdateScenarioBody, user=Depends(get
         )
         if not db.fetchone():
             raise HTTPException(404, "Сценарий не найден")
-
+ 
         fields = ["updated_at=%s"]
         vals   = [now]
         if body.name        is not None: fields.append("name=%s");        vals.append(body.name)
@@ -409,8 +429,8 @@ def update_scenario(scenario_id: int, body: UpdateScenarioBody, user=Depends(get
         db.execute("SELECT * FROM scenarios WHERE id=%s", (scenario_id,))
         row = db.fetchone()
     return _serialize_scenario(row)
-
-
+ 
+ 
 @app.delete("/api/scenarios/{scenario_id}")
 def delete_scenario(scenario_id: int, user=Depends(get_current_user)):
     with get_db() as db:
@@ -422,10 +442,10 @@ def delete_scenario(scenario_id: int, user=Depends(get_current_user)):
             raise HTTPException(404, "Сценарий не найден")
         db.execute("DELETE FROM scenarios WHERE id=%s", (scenario_id,))
     return {"ok": True}
-
-
+ 
+ 
 # ─── Webhook ──────────────────────────────────────────────────────────────────
-
+ 
 @app.post("/webhook/{bot_token}")
 async def telegram_webhook(bot_token: str, update: WebhookUpdate):
     with get_db() as db:
@@ -435,13 +455,13 @@ async def telegram_webhook(bot_token: str, update: WebhookUpdate):
         bot_row = db.fetchone()
     if not bot_row:
         return {"ok": False}
-
+ 
     bot         = dict(bot_row)
     chat_id     = None
     user_text   = ""
     callback_id = None
     is_callback = False
-
+ 
     if update.message:
         chat_id   = update.message.get("chat", {}).get("id")
         user_text = (update.message.get("text") or "").strip()
@@ -450,32 +470,32 @@ async def telegram_webhook(bot_token: str, update: WebhookUpdate):
         user_text   = (update.callback_query.get("data") or "").strip()
         callback_id = update.callback_query.get("id")
         is_callback = True
-
+ 
     if not chat_id:
         return {"ok": True}
-
+ 
     if is_callback and user_text.startswith("goto:"):
         await handle_goto(bot, chat_id, user_text[5:], callback_id)
         return {"ok": True}
-
+ 
     if not is_callback:
         resumed = await resume_scenario(bot, chat_id, user_text, callback_id)
         if resumed:
             return {"ok": True}
-
+ 
     if not user_text:
         return {"ok": True}
-
+ 
     scenario = find_active_scenario(bot["id"], user_text)
     if not scenario:
         return {"ok": True}
-
+ 
     await execute_scenario(bot, scenario, chat_id, user_text, callback_id)
     return {"ok": True}
-
-
+ 
+ 
 # ─── Health ───────────────────────────────────────────────────────────────────
-
+ 
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "BOTOLABR API v2"}
